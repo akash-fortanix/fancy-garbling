@@ -9,7 +9,6 @@
 )]
 
 #![feature(reverse_bits, try_from, no_panic_pow)]
-#![feature(async_await, await_macro, futures_api)]
 #![allow(non_snake_case)]
 
 extern crate libc;
@@ -17,8 +16,6 @@ extern crate num;
 extern crate num_traits;
 extern crate rand as extern_rand;
 extern crate base_conversion; // local dependency
-extern crate futures;
-extern crate itertools;
 
 pub mod circuit;
 pub mod garble;

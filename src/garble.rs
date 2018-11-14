@@ -2,12 +2,6 @@ use circuit::{Circuit, Gate};
 use rand::Rng;
 use wire::Wire;
 
-use futures::prelude::*;
-use futures::future::{lazy, ready, ok};
-use futures::executor::ThreadPool;
-use itertools::Itertools;
-use std::boxed::Box;
-
 use std::collections::HashMap;
 
 type GarbledGate = Vec<u128>;
@@ -28,70 +22,47 @@ pub struct Evaluator {
 pub fn garble(c: &Circuit) -> (Garbler, Evaluator) {
     let mut gb = Garbler::new();
 
-    for &m in c.gate_moduli.iter().unique() {
-        gb.create_delta(m);
-    }
-
-    // let mut wires: Vec<Wire> = Vec::with_capacity(c.gates.len());
-    // let mut wires: Vec<Box<dyn Future<Output=Wire>>> = Vec::with_capacity(c.gates.len());
-    let mut wires: Vec<_> = Vec::with_capacity(c.gates.len());
-    let mut gates: Vec<GarbledGate> = Vec::with_capacity(c.num_nonfree_gates);
+    let mut wires: Vec<Wire> = Vec::new();
+    let mut gates: Vec<GarbledGate> = Vec::new();
 
     for i in 0..c.gates.len() {
-        let q = c.modulus(i);
+        let q = c.moduli[i];
         let w = match c.gates[i] {
-            Gate::Input { .. } => ready(gb.input(q)),
-            Gate::Const { .. } => ready(gb.constant(q)),
+            Gate::Input { .. } => gb.input(q),
+            Gate::Const { .. } => gb.constant(q),
 
-            // Gate::Add { xref, yref } => future::lazy(|_| {
-            //     wires[xref].and_then(|x: Wire|
-            //     wires[yref].and_then(|y: Wire|
-            //         future::ok(x.plus(&y))
-            //     ))
-            // }),
+            Gate::Add { xref, yref } => wires[xref].plus(&wires[yref]),
+            Gate::Sub { xref, yref } => wires[xref].minus(&wires[yref]),
+            Gate::Cmul { xref, c }   => wires[xref].cmul(c),
 
-            _ => unimplemented!(),
+            Gate::Proj { xref, ref tt, .. }  => {
+                let X = wires[xref].clone();
+                let (w,g) = gb.proj(&X, q, tt, i);
+                gates.push(g);
+                w
+            }
 
-            // Gate::Sub { xref, yref } => future::lazy(|_| wires[xref].minus(&wires[yref])),
-            // Gate::Cmul { xref, c }   => future::lazy(|_| wires[xref].cmul(c)),
+            Gate::Yao { xref, yref, ref tt, .. } => {
+                let X = wires[xref].clone();
+                let Y = wires[yref].clone();
+                let (w,g) = gb.yao(&X, &Y, q, tt, i);
+                gates.push(g);
+                w
+            }
 
-            // Gate::Proj { xref, ref tt, .. } => future::lazy(|_| {
-            //     let X = &wires[xref];
-            //     let (w,g) = gb.proj(X, q, tt, i);
-            //     gates.push(g);
-            //     w
-            // }),
-
-            // Gate::Yao { xref, yref, ref tt, .. } => {
-            //     let X = &wires[xref];
-            //     let Y = &wires[yref];
-            //     let (w,g) = gb.yao(X, Y, q, tt, i);
-            //     gates.push(g);
-            //     w
-            // }
-
-            // Gate::HalfGate { xref, yref, .. }  => {
-            //     let X = &wires[xref];
-            //     let Y = &wires[yref];
-            //     let (w,g) = gb.half_gate(X, Y, q, i);
-            //     gates.push(g);
-            //     w
-            // }
+            Gate::HalfGate { xref, yref, .. }  => {
+                let X = wires[xref].clone();
+                let Y = wires[yref].clone();
+                let (w,g) = gb.half_gate(&X, &Y, q, i);
+                gates.push(g);
+                w
+            }
         };
         wires.push(w); // add the new zero-wire
     }
 
-    let outs : Vec<Wire> = ThreadPool::new().unwrap().run(lazy(|_| {
-        let mut outs: Vec<Wire> = Vec::with_capacity(c.noutputs());
-        for &r in c.output_refs.iter() {
-            (&mut wires[r]).then(|w| ready(outs.push(w)));
-        }
-        outs
-        // unimplemented!()
-    }));
-
-    for (i,X) in outs.iter().enumerate() {
-        gb.output(X, i);
+    for (i,&r) in c.output_refs.iter().enumerate() {
+        gb.output(&wires[r], i);
     }
 
     let cs = c.const_vals.as_ref().expect("constants needed!");
@@ -111,7 +82,7 @@ impl Garbler {
         }
     }
 
-    fn create_delta(&mut self, q: u16) -> Wire {
+    fn delta(&mut self, q: u16) -> Wire {
         if !self.deltas.contains_key(&q) {
             let w = Wire::rand_delta(&mut self.rng, q);
             self.deltas.insert(q, w.clone());
@@ -119,10 +90,6 @@ impl Garbler {
         } else {
             self.deltas[&q].clone()
         }
-    }
-
-    fn delta(&self, q:u16) -> &Wire {
-        &self.deltas.get(&q).expect(&format!("garbler has not generated delta for {}!", q))
     }
 
     pub fn input(&mut self, q: u16) -> Wire {
@@ -139,18 +106,16 @@ impl Garbler {
 
     pub fn output(&mut self, X: &Wire, output_num: usize) {
         let mut cts = Vec::new();
-        {
-            let q = X.modulus();
-            let D = self.delta(q);
-            for k in 0..q {
-                let t = output_tweak(output_num, k);
-                cts.push(X.plus(&D.cmul(k)).hash(t));
-            }
+        let q = X.modulus();
+        let D = &self.delta(q);
+        for k in 0..q {
+            let t = output_tweak(output_num, k);
+            cts.push(X.plus(&D.cmul(k)).hash(t));
         }
         self.outputs.push(cts);
     }
 
-    pub fn proj(&self, A: &Wire, q_out: u16, tt: &[u16], gate_num: usize)
+    pub fn proj(&mut self, A: &Wire, q_out: u16, tt: &[u16], gate_num: usize)
         -> (Wire, GarbledGate)
     {
         let q_in = A.modulus();
@@ -183,7 +148,7 @@ impl Garbler {
         (C, gate)
     }
 
-    fn yao(&self, A: &Wire, B: &Wire, q: u16, tt: &[Vec<u16>], gate_num: usize)
+    fn yao(&mut self, A: &Wire, B: &Wire, q: u16, tt: &[Vec<u16>], gate_num: usize)
         -> (Wire, GarbledGate)
     {
         let xmod = A.modulus() as usize;
@@ -221,7 +186,7 @@ impl Garbler {
         (C, gate)
     }
 
-    pub fn half_gate(&self, A: &Wire, B: &Wire, q: u16, gate_num: usize)
+    pub fn half_gate(&mut self, A: &Wire, B: &Wire, q: u16, gate_num: usize)
         -> (Wire, GarbledGate)
     {
         let mut gate = vec![None; 2 * q as usize - 2];
@@ -323,7 +288,7 @@ impl Evaluator {
     pub fn eval(&self, c: &Circuit, inputs: &[Wire]) -> Vec<Wire> {
         let mut wires: Vec<Wire> = Vec::new();
         for i in 0..c.gates.len() {
-            let q = c.modulus(i);
+            let q = c.moduli[i];
             let w = match c.gates[i] {
 
                 Gate::Input { id }       => inputs[id].clone(),
@@ -348,7 +313,7 @@ impl Evaluator {
                     if a.color() == 0 && b.color() == 0 {
                         a.hashback2(&b, tweak(i), q).negate()
                     } else {
-                        let ix = a.color() as usize * c.modulus(yref) as usize + b.color() as usize;
+                        let ix = a.color() as usize * c.moduli[yref] as usize + b.color() as usize;
                         let ct = self.gates[id][ix - 1];
                         Wire::from_u128(ct ^ a.hash2(&b, tweak(i)), q)
                     }
@@ -559,6 +524,18 @@ mod tests {
                 tt.push(tt_);
             }
             let z = b.yao(x, y, q, tt);
+            b.output(z);
+            b.finish()
+        });
+    }
+//}}}
+    #[test] // mul_dlog {{{
+    fn mul_dlog() {
+        garble_test_helper(|q| {
+            let mut b = Builder::new();
+            let x = b.input(q);
+            let y = b.input(q);
+            let z = b.mul_dlog(&[x,y]);
             b.output(z);
             b.finish()
         });
