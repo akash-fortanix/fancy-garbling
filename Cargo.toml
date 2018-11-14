@@ -18,7 +18,7 @@ num = "^0.2"
 num-traits = "^0.2.6"
 itertools = "^0.7.8"
 base_conversion = { path = "base_conversion" }
-futures-preview =" ^0.3.0-alpha.9"
+futures-preview = "^0.3.0-alpha.9"
 
 [dev-dependencies]
 criterion = "0.2"
