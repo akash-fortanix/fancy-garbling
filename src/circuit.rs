@@ -76,6 +76,7 @@ impl Circuit {
 
     pub fn ninputs(&self) -> usize { self.input_refs.len() }
     pub fn noutputs(&self) -> usize { self.output_refs.len() }
+    pub fn modulus(&self, x: Ref) -> u16 { self.moduli[x] }
 
     pub fn input_mod(&self, id: Id) -> u16 {
         let r = self.input_refs[id];

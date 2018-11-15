@@ -16,6 +16,8 @@ extern crate num;
 extern crate num_traits;
 extern crate rand as extern_rand;
 extern crate base_conversion; // local dependency
+extern crate scoped_pool;
+extern crate num_cpus;
 
 pub mod circuit;
 pub mod garble;
