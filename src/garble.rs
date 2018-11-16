@@ -196,7 +196,7 @@ impl Garbler {
         (C, gate)
     }
 
-    pub fn half_gate(&self, A: &Wire, B: &Wire, gate_num: usize)
+    pub fn half_gate(&mut self, A: &Wire, B: &Wire, gate_num: usize)
         -> (Wire, GarbledGate)
     {
         let q = A.modulus();
@@ -204,22 +204,42 @@ impl Garbler {
 
         debug_assert!(q >= qb);
 
-        // let r;
+        let D = self.delta(q).clone();
+        let Db = self.delta(qb).clone();
 
-        // if q != qb {
-        //     r = self.rng.gen_u16() % q;
-        //     let tab = (0..qb).map(|b| (r + b) % q).to_vec();
-        // } else {
-            let r = B.color(); // secret value known only to the garbler (ev knows r+b)
-        // }
+        let r;
+        let mut gate;
 
-        let mut gate = vec![None; q as usize + qb as usize - 2];
+        // hack for unequal moduli
+        if q != qb {
+            debug_assert!(qb < 8);
+
+            r = self.rng.gen_u16() % q;
+            gate = vec![None; q as usize + qb as usize - 1];
+
+            let t = tweak2(gate_num as u64, 1);
+
+            let mut minitable = vec![None; qb as usize];
+            for b in 0..qb {
+                let B_ = B.plus(&Db.cmul(b));
+                let ct = (B_.hash(t) & 0xFFFF) ^ ((r + b) % q) as u128;
+                minitable[B_.color() as usize] = Some(ct);
+            }
+
+            let mut packed = 0;
+            for i in 0..qb as usize {
+                packed += minitable[i].unwrap() << (16 * i);
+            }
+
+            *gate.last_mut().unwrap() = Some(packed);
+        } else {
+            r = B.color(); // secret value known only to the garbler (ev knows r+b)
+            gate = vec![None; q as usize + qb as usize - 2];
+        }
+
         let g = tweak2(gate_num as u64, 0);
 
         println!("r={}", r);
-
-        let D = self.delta(q);
-        let Db = self.delta(qb);
 
         // X = H(A+aD) + arD such that a + A.color == 0
         let alpha = (q - A.color()) % q; // alpha = -A.color
@@ -356,15 +376,28 @@ impl Evaluator {
                         Wire::from_u128(ct_left ^ A.hash(g), q)
                     };
 
-                    // evaluator's half gate
                     let B = &wires[yref];
+
+                    let xmod = c.modulus(xref);
+                    let ymod = c.modulus(yref);
+
+                    let bcol;
+                    if xmod != ymod {
+                        let minitable = self.gates[id].last().unwrap().clone();
+                        let ct = (minitable >> (B.color() * 16)) as u16;
+                        bcol = B.hash(tweak2(i as u64, 1)) as u16 ^ ct;
+                    } else {
+                        bcol = B.color();
+                    }
+
+                    // evaluator's half gate
                     let R = if B.color() == 0 {
                         B.hashback(g,q)
                     } else {
                         let ct_right = self.gates[id][(q + B.color()) as usize - 2];
                         Wire::from_u128(ct_right ^ B.hash(g), q)
                     };
-                    L.plus(&R.plus(&A.cmul(B.color())))
+                    L.plus(&R.plus(&A.cmul(bcol)))
                 }
             };
             wires.push(w);
