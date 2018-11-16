@@ -222,7 +222,8 @@ impl Garbler {
             let mut minitable = vec![None; qb as usize];
             for b in 0..qb {
                 let B_ = B.plus(&Db.cmul(b));
-                let ct = (B_.hash(t) & 0xFFFF) ^ ((r + b) % q) as u128;
+                let new_color = (r+b) % q;
+                let ct = (B_.hash(t) & 0xFFFF) ^ new_color as u128;
                 minitable[B_.color() as usize] = Some(ct);
             }
 
@@ -248,7 +249,8 @@ impl Garbler {
 
         // Y = H(B + bD)
         let beta = (qb - B.color()) % qb;
-        let Y = B.plus(&Db.cmul(beta)).hashback(g,q);
+        let Y = B.plus(&Db.cmul(beta)).hashback(g,q)
+                .plus(&D.cmul((beta + r) % q));
 
         for a in 0..q {
             // garbler's half-gate: outputs X-arD
@@ -265,7 +267,7 @@ impl Garbler {
             // G = H(B+bD) + Y-(b+r)A
             let B_ = B.plus(&Db.cmul(b));
             if B_.color() != 0 {
-                let G = B_.hash(g) ^ Y.minus(&A.cmul(B_.color())).as_u128();
+                let G = B_.hash(g) ^ Y.minus(&A.cmul((b+r) % q)).as_u128();
                 gate[q as usize - 1 + B_.color() as usize - 1] = Some(G);
             }
         }
@@ -384,8 +386,8 @@ impl Evaluator {
                     let bcol;
                     if xmod != ymod {
                         let minitable = self.gates[id].last().unwrap().clone();
-                        let ct = (minitable >> (B.color() * 16)) as u16;
-                        bcol = B.hash(tweak2(i as u64, 1)) as u16 ^ ct;
+                        let ct = minitable >> (B.color() * 16);
+                        bcol = (B.hash(tweak2(i as u64, 1)) ^ ct) as u16;
                     } else {
                         bcol = B.color();
                     }
