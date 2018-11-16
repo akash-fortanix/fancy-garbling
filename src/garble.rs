@@ -204,10 +204,19 @@ impl Garbler {
 
         debug_assert!(q >= qb);
 
-        let mut gate = vec![None; q as usize + qb as usize - 2];
-        let g = tweak(gate_num);
+        // let r;
 
-        let r = B.color(); // secret value known only to the garbler (ev knows r+b)
+        // if q != qb {
+        //     r = self.rng.gen_u16() % q;
+        //     let tab = (0..qb).map(|b| (r + b) % q).to_vec();
+        // } else {
+            let r = B.color(); // secret value known only to the garbler (ev knows r+b)
+        // }
+
+        let mut gate = vec![None; q as usize + qb as usize - 2];
+        let g = tweak2(gate_num as u64, 0);
+
+        println!("r={}", r);
 
         let D = self.delta(q);
         let Db = self.delta(qb);
@@ -232,11 +241,11 @@ impl Garbler {
         }
 
         for b in 0..qb {
-            // evaluator's half-gate: outputs Y+a(r+b)D
+            // evaluator's half-gate: outputs Y-(b+r)D
             // G = H(B+bD) + Y-(b+r)A
             let B_ = B.plus(&Db.cmul(b));
             if B_.color() != 0 {
-                let G = B_.hash(g) ^ Y.minus(&A.cmul((b+r)%qb)).as_u128();
+                let G = B_.hash(g) ^ Y.minus(&A.cmul(B_.color())).as_u128();
                 gate[q as usize - 1 + B_.color() as usize - 1] = Some(G);
             }
         }
@@ -336,7 +345,7 @@ impl Evaluator {
                 }
 
                 Gate::HalfGate { xref, yref, id } => {
-                    let g = tweak(i);
+                    let g = tweak2(i as u64, 0);
 
                     // garbler's half gate
                     let A = &wires[xref];
@@ -369,6 +378,9 @@ impl Evaluator {
 
 fn tweak(i: usize) -> u128 {
     i as u128
+}
+fn tweak2(i: u64, j: u64) -> u128 {
+    (i as u128) << 64 + j as u128
 }
 
 fn output_tweak(i: usize, k: u16) -> u128 {
@@ -561,14 +573,37 @@ mod tests {
 //}}}
     #[test] // half_gate_unequal_mods {{{
     fn half_gate_unequal_mods() {
-        garble_test_helper(|q| {
+        for q in 3..16 {
+            let ymod = 2;
+
             let mut b = Builder::new();
             let x = b.input(q);
-            let y = b.input(2);
+            let y = b.input(ymod);
             let z = b.half_gate(x,y);
             b.output(z);
-            b.finish()
-        });
+            let c = b.finish();
+
+            let (gb, ev) = garble(&c);
+
+            let mut fail = false;
+            for x in 0..q {
+                for y in 0..ymod {
+                    let xs = &gb.encode(&[x,y]);
+                    let ys = &ev.eval(&c, xs);
+                    let decoded = gb.decode(ys)[0];
+                    let should_be = c.eval(&[x,y])[0];
+                    if decoded != should_be {
+                        println!("FAILED inp={:?} q={} got={} should_be={}", [x,y], q, decoded, should_be);
+                        fail = true;
+                    } else {
+                        println!("SUCCEEDED inp={:?} q={} got={} should_be={}", [x,y], q, decoded, should_be);
+                    }
+                }
+            }
+            if fail {
+                panic!("failed!")
+            }
+        }
     }
 //}}}
     #[test] // base_q_addition_no_carry {{{
