@@ -212,20 +212,18 @@ impl Garbler {
         let D = self.delta(q);
         let Db = self.delta(qb);
 
-        // X = H(A+aD) - arD such that a + A.color == 0
+        // X = H(A+aD) + arD such that a + A.color == 0
         let alpha = (q - A.color()) % q; // alpha = -A.color
         let X = A.plus(&D.cmul(alpha)).hashback(g,q)
                  .plus(&D.cmul((alpha * r) % q));
 
-        // Y = -H(B + bD) + (b+r)A
+        // Y = H(B + bD)
         let beta = (qb - B.color()) % qb;
         let Y = B.plus(&Db.cmul(beta)).hashback(g,q);
-                 // .plus(&A.cmul((beta + r) % qb));
 
-        for i in 0..q {
+        for a in 0..q {
             // garbler's half-gate: outputs X-arD
             // G = H(A+aD) + X+a(-r)D = H(A+aD) + X-arD
-            let a = i; // a: truth value of wire X
             let A_ = A.plus(&D.cmul(a));
             if A_.color() != 0 {
                 let tao = a * (q - r) % q;
@@ -234,12 +232,12 @@ impl Garbler {
             }
         }
 
-        for i in 0..qb {
+        for b in 0..qb {
             // evaluator's half-gate: outputs Y+a(r+b)D
             // G = H(B+bD) + Y-(b+r)A
-            let B_ = B.plus(&Db.cmul(i));
+            let B_ = B.plus(&Db.cmul(b));
             if B_.color() != 0 {
-                let G = B_.hash(g) ^ Y.minus(&A.cmul((i+r)%qb)).as_u128();
+                let G = B_.hash(g) ^ Y.minus(&A.cmul((b+r)%qb)).as_u128();
                 gate[q as usize - 1 + B_.color() as usize - 1] = Some(G);
             }
         }
