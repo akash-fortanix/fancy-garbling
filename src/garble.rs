@@ -201,36 +201,37 @@ impl Garbler {
     pub fn half_gate(&self, A: &Wire, B: &Wire, gate_num: usize)
         -> (Wire, GarbledGate)
     {
-        let qx = A.modulus();
+        let q = A.modulus();
         let qy = B.modulus();
-        let q = std::cmp::max(qx,qy);
 
-        let mut gate = vec![None; qx as usize + qy as usize - 2];
+        debug_assert!(q >= qy);
+
+        let mut gate = vec![None; q as usize + qy as usize - 2];
         let g = tweak(gate_num);
 
         let r = B.color(); // secret value known only to the garbler (ev knows r+b)
 
-        let Dx = self.delta(qx);
+        let D = self.delta(q);
         let Dy = self.delta(qy);
 
         // X = -H(A+aD) - arD such that a + A.color == 0
-        let alpha = qx - A.color(); // alpha = -A.color
-        let X = A.plus(&Dx.cmul(alpha)).hashback(g,qx).negate()
-                 .plus(&Dx.cmul(alpha * r % qx));
+        let alpha = q - A.color(); // alpha = -A.color
+        let X = A.plus(&D.cmul(alpha)).hashback(g,q).negate()
+                 .plus(&D.cmul(alpha * r % q));
 
         // Y = -H(B + bD) + brA
         let beta = qy - B.color();
-        let Y = B.plus(&Dy.cmul(beta)).hashback(g,qx).negate()
-                 .plus(&A.cmul((beta + r) % qx));
+        let Y = B.plus(&Dy.cmul(beta)).hashback(g,q).negate()
+                 .plus(&A.cmul((beta + r) % qy));
 
         for i in 0..q {
             // garbler's half-gate: outputs X-arD
             // G = H(A+aD) + X+a(-r)D = H(A+aD) + X-arD
             let a = i; // a: truth value of wire X
-            let A_ = A.plus(&Dx.cmul(a));
+            let A_ = A.plus(&D.cmul(a));
             if A_.color() != 0 {
-                let tao = a * (qx - r) % qx;
-                let G = A_.hash(g) ^ X.plus(&Dx.cmul(tao)).as_u128();
+                let tao = a * (q - r) % q;
+                let G = A_.hash(g) ^ X.plus(&D.cmul(tao)).as_u128();
                 gate[A_.color() as usize - 1] = Some(G);
             }
 
@@ -355,7 +356,6 @@ impl Evaluator {
                     } else {
                         let ct_right = self.gates[id][(q + B.color()) as usize - 2];
                         Wire::from_u128(ct_right ^ B.hash(g), q)
-
                     };
                     L.plus(&R.plus(&A.cmul(B.color())))
                 }
@@ -392,8 +392,8 @@ mod tests {
         where F: Fn(u16) -> Circuit
     {
         let mut rng = Rng::new();
-        for _ in 0..16 {
-            let q = rng.gen_prime();
+        for q in 2..128 {
+            // let q = rng.gen_prime();
             let c = &f(q);
             let (gb, ev) = garble(&c);
             println!("number of ciphertexts for mod {}: {}", q, ev.size());
@@ -401,7 +401,12 @@ mod tests {
                 let inps = (0..c.ninputs()).map(|i| { rng.gen_u16() % c.input_mod(i) }).to_vec();
                 let xs = &gb.encode(&inps);
                 let ys = &ev.eval(c, xs);
-                assert_eq!(gb.decode(ys)[0], c.eval(&inps)[0], "q={}", q);
+                let decoded = gb.decode(ys)[0];
+                let should_be = c.eval(&inps)[0];
+                if decoded != should_be {
+                    println!("inp={:?} q={} got={} should_be={}", inps, q, decoded, should_be);
+                    panic!("failed test!");
+                }
             }
         }
     }
