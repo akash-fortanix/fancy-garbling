@@ -223,11 +223,10 @@ impl Garbler {
 
         for a in 0..q {
             // garbler's half-gate: outputs X-arD
-            // G = H(A+aD) + X+a(-r)D = H(A+aD) + X-arD
-            let A_ = A.plus(&D.cmul(a));
+            // G = H(A+aD) ^ X+a(-r)D = H(A+aD) ^ X-arD
+            let A_ = A.plus(&D.cmul(a)); // = H(A+aD)
             if A_.color() != 0 {
-                let tao = a * (q - r) % q;
-                let G = A_.hash(g) ^ X.plus(&D.cmul(tao)).as_u128();
+                let G = A_.hash(g) ^ X.minus(&D.cmul(a * r % q)).as_u128();
                 gate[A_.color() as usize - 1] = Some(G);
             }
         }
