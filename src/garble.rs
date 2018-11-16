@@ -143,7 +143,6 @@ impl Garbler {
         // W_g^0 <- -H(g, W_{a_1}^0 - \tao\Delta_m) - \phi(-\tao)\Delta_n
         let C = A.minus(&self.delta(q_in).cmul(tao))
                  .hashback(g, q_out)
-                 .negate()
                  .minus(&self.delta(q_out).cmul(tt[((q_in - tao) % q_in) as usize]));
 
         for x in 0..q_in {
@@ -178,7 +177,6 @@ impl Garbler {
         let B_delta = self.delta(ymod as u16);
         let C = A.minus(&self.delta(xmod as u16).cmul(A.color()))
                  .hashback2(&B.minus(&B_delta.cmul(B.color())), g, q)
-                 .negate()
                  .minus(&self.delta(q).cmul(sigma));
 
         for x in 0..xmod {
@@ -202,27 +200,27 @@ impl Garbler {
         -> (Wire, GarbledGate)
     {
         let q = A.modulus();
-        let qy = B.modulus();
+        let qb = B.modulus();
 
-        debug_assert!(q >= qy);
+        debug_assert!(q >= qb);
 
-        let mut gate = vec![None; q as usize + qy as usize - 2];
+        let mut gate = vec![None; q as usize + qb as usize - 2];
         let g = tweak(gate_num);
 
         let r = B.color(); // secret value known only to the garbler (ev knows r+b)
 
         let D = self.delta(q);
-        let Dy = self.delta(qy);
+        let Db = self.delta(qb);
 
-        // X = -H(A+aD) - arD such that a + A.color == 0
-        let alpha = q - A.color(); // alpha = -A.color
-        let X = A.plus(&D.cmul(alpha)).hashback(g,q).negate()
-                 .plus(&D.cmul(alpha * r % q));
+        // X = H(A+aD) - arD such that a + A.color == 0
+        let alpha = (q - A.color()) % q; // alpha = -A.color
+        let X = A.plus(&D.cmul(alpha)).hashback(g,q)
+                 .plus(&D.cmul((alpha * r) % q));
 
-        // Y = -H(B + bD) + brA
-        let beta = qy - B.color();
-        let Y = B.plus(&Dy.cmul(beta)).hashback(g,q).negate()
-                 .plus(&A.cmul((beta + r) % qy));
+        // Y = -H(B + bD) + (b+r)A
+        let beta = (qb - B.color()) % qb;
+        let Y = B.plus(&Db.cmul(beta)).hashback(g,q);
+                 // .plus(&A.cmul((beta + r) % qb));
 
         for i in 0..q {
             // garbler's half-gate: outputs X-arD
@@ -234,15 +232,18 @@ impl Garbler {
                 let G = A_.hash(g) ^ X.plus(&D.cmul(tao)).as_u128();
                 gate[A_.color() as usize - 1] = Some(G);
             }
+        }
 
+        for i in 0..qb {
             // evaluator's half-gate: outputs Y+a(r+b)D
             // G = H(B+bD) + Y-(b+r)A
-            let B_ = B.plus(&Dy.cmul(i));
+            let B_ = B.plus(&Db.cmul(i));
             if B_.color() != 0 {
-                let G = B_.hash(g) ^ Y.minus(&A.cmul((i+r)%qy)).as_u128();
-                gate[(q + B_.color()) as usize - 2] = Some(G);
+                let G = B_.hash(g) ^ Y.minus(&A.cmul((i+r)%qb)).as_u128();
+                gate[q as usize - 1 + B_.color() as usize - 1] = Some(G);
             }
         }
+
         let gate = gate.into_iter().map(Option::unwrap).collect();
         (X.plus(&Y), gate) // output zero wire
     }
@@ -318,7 +319,7 @@ impl Evaluator {
                 Gate::Proj { xref, id, .. } => {
                     let x = &wires[xref];
                     if x.color() == 0 {
-                        x.hashback(i as u128, q).negate()
+                        x.hashback(i as u128, q)
                     } else {
                         let ct = self.gates[id][x.color() as usize - 1];
                         Wire::from_u128(ct ^ x.hash(i as u128), q)
@@ -329,7 +330,7 @@ impl Evaluator {
                     let a = &wires[xref];
                     let b = &wires[yref];
                     if a.color() == 0 && b.color() == 0 {
-                        a.hashback2(&b, tweak(i), q).negate()
+                        a.hashback2(&b, tweak(i), q)
                     } else {
                         let ix = a.color() as usize * c.modulus(yref) as usize + b.color() as usize;
                         let ct = self.gates[id][ix - 1];
@@ -343,7 +344,7 @@ impl Evaluator {
                     // garbler's half gate
                     let A = &wires[xref];
                     let L = if A.color() == 0 {
-                        A.hashback(g,q).negate()
+                        A.hashback(g,q)
                     } else {
                         let ct_left = self.gates[id][A.color() as usize - 1];
                         Wire::from_u128(ct_left ^ A.hash(g), q)
@@ -352,7 +353,7 @@ impl Evaluator {
                     // evaluator's half gate
                     let B = &wires[yref];
                     let R = if B.color() == 0 {
-                        B.hashback(g,q).negate()
+                        B.hashback(g,q)
                     } else {
                         let ct_right = self.gates[id][(q + B.color()) as usize - 2];
                         Wire::from_u128(ct_right ^ B.hash(g), q)
@@ -392,8 +393,8 @@ mod tests {
         where F: Fn(u16) -> Circuit
     {
         let mut rng = Rng::new();
-        for q in 2..128 {
-            // let q = rng.gen_prime();
+        for _ in 0..16 {
+            let q = rng.gen_prime();
             let c = &f(q);
             let (gb, ev) = garble(&c);
             println!("number of ciphertexts for mod {}: {}", q, ev.size());
@@ -551,6 +552,18 @@ mod tests {
 //}}}
     #[test] // half_gate {{{
     fn half_gate() {
+        garble_test_helper(|q| {
+            let mut b = Builder::new();
+            let x = b.input(q);
+            let y = b.input(q);
+            let z = b.half_gate(x,y);
+            b.output(z);
+            b.finish()
+        });
+    }
+//}}}
+    #[test] // half_gate_unequal_mods {{{
+    fn half_gate_unequal_mods() {
         garble_test_helper(|q| {
             let mut b = Builder::new();
             let x = b.input(q);
