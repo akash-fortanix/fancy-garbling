@@ -59,7 +59,7 @@ pub fn garble(c: &Circuit) -> (Garbler, Evaluator) {
             Gate::HalfGate { xref, yref, .. }  => {
                 let X = &wires[xref];
                 let Y = &wires[yref];
-                let (w,g) = gb.half_gate(X, Y, q, i);
+                let (w,g) = gb.half_gate(X, Y, i);
                 gates.push(g);
                 w
             }
@@ -198,42 +198,47 @@ impl Garbler {
         (C, gate)
     }
 
-    pub fn half_gate(&self, A: &Wire, B: &Wire, q: u16, gate_num: usize)
+    pub fn half_gate(&self, A: &Wire, B: &Wire, gate_num: usize)
         -> (Wire, GarbledGate)
     {
-        let mut gate = vec![None; 2 * q as usize - 2];
+        let qx = A.modulus();
+        let qy = B.modulus();
+        let q = std::cmp::max(qx,qy);
+
+        let mut gate = vec![None; qx as usize + qy as usize - 2];
         let g = tweak(gate_num);
 
         let r = B.color(); // secret value known only to the garbler (ev knows r+b)
 
-        let D = &self.delta(q); // delta for this modulus
+        let Dx = self.delta(qx);
+        let Dy = self.delta(qy);
 
         // X = -H(A+aD) - arD such that a + A.color == 0
-        let alpha = q - A.color(); // alpha = -A.color
-        let X = A.plus(&D.cmul(alpha)).hashback(g,q).negate()
-                 .plus(&D.cmul(alpha * r % q));
+        let alpha = qx - A.color(); // alpha = -A.color
+        let X = A.plus(&Dx.cmul(alpha)).hashback(g,qx).negate()
+                 .plus(&Dx.cmul(alpha * r % qx));
 
         // Y = -H(B + bD) + brA
-        let beta = q - B.color();
-        let Y = B.plus(&D.cmul(beta)).hashback(g,q).negate()
-                 .plus(&A.cmul((beta + r) % q));
+        let beta = qy - B.color();
+        let Y = B.plus(&Dy.cmul(beta)).hashback(g,qx).negate()
+                 .plus(&A.cmul((beta + r) % qx));
 
         for i in 0..q {
             // garbler's half-gate: outputs X-arD
             // G = H(A+aD) + X+a(-r)D = H(A+aD) + X-arD
             let a = i; // a: truth value of wire X
-            let A_ = A.plus(&self.delta(q).cmul(a));
+            let A_ = A.plus(&Dx.cmul(a));
             if A_.color() != 0 {
-                let tao = a * (q - r) % q;
-                let G = A_.hash(g) ^ X.plus(&D.cmul(tao)).as_u128();
+                let tao = a * (qx - r) % qx;
+                let G = A_.hash(g) ^ X.plus(&Dx.cmul(tao)).as_u128();
                 gate[A_.color() as usize - 1] = Some(G);
             }
 
             // evaluator's half-gate: outputs Y+a(r+b)D
             // G = H(B+bD) + Y-(b+r)A
-            let B_ = B.plus(&D.cmul(i));
+            let B_ = B.plus(&Dy.cmul(i));
             if B_.color() != 0 {
-                let G = B_.hash(g) ^ Y.minus(&A.cmul((i+r)%q)).as_u128();
+                let G = B_.hash(g) ^ Y.minus(&A.cmul((i+r)%qy)).as_u128();
                 gate[(q + B_.color()) as usize - 2] = Some(G);
             }
         }
@@ -544,7 +549,7 @@ mod tests {
         garble_test_helper(|q| {
             let mut b = Builder::new();
             let x = b.input(q);
-            let y = b.input(q);
+            let y = b.input(2);
             let z = b.half_gate(x,y);
             b.output(z);
             b.finish()
